@@ -13,7 +13,10 @@ export interface ButtonOpts {
 }
 
 // Apple HIG / Material both require a minimum 44–48 px tap target.
-const MIN_TOUCH_SIZE = 48;
+// We bump it to 56 for thumb-friendliness, plus add hit-area padding
+// beyond the visual button so off-by-a-few-pixels taps still register.
+const MIN_TOUCH_SIZE = 56;
+const HIT_PADDING = 12;
 // Slightly larger buttons on touch devices for easier tapping.
 const TOUCH_SCALE_BOOST = 1.1;
 
@@ -63,11 +66,12 @@ export function makeButton(
   const container = scene.add.container(x, y, [bg, text]);
   container.setSize(w, h);
 
-  // Hit-area must always be at least MIN_TOUCH_SIZE on each axis; visual
-  // size stays as requested. The rectangle is in the container's local
+  // Hit-area must always be at least MIN_TOUCH_SIZE on each axis and is
+  // padded by HIT_PADDING beyond the visual button so off-by-a-few-pixel
+  // taps still register. The rectangle is in the container's local
   // coordinate space so it scales with the container.
-  const hitW = Math.max(w, MIN_TOUCH_SIZE);
-  const hitH = Math.max(h, MIN_TOUCH_SIZE);
+  const hitW = Math.max(w + HIT_PADDING * 2, MIN_TOUCH_SIZE);
+  const hitH = Math.max(h + HIT_PADDING * 2, MIN_TOUCH_SIZE);
   container.setInteractive(
     new Phaser.Geom.Rectangle(-hitW / 2, -hitH / 2, hitW, hitH),
     Phaser.Geom.Rectangle.Contains,
@@ -85,16 +89,22 @@ export function makeButton(
   }
 
   container.on('pointerover', () => {
-    scene.tweens.add({ targets: container, scale: baseScale * 1.04, duration: 120, ease: 'Sine.easeOut' });
+    scene.tweens.add({ targets: container, scale: baseScale * 1.04, duration: 80, ease: 'Sine.easeOut' });
   });
   container.on('pointerout', () => {
-    scene.tweens.add({ targets: container, scale: baseScale, duration: 120 });
+    scene.tweens.add({ targets: container, scale: baseScale, duration: 80 });
   });
   container.on('pointerdown', () => {
-    scene.tweens.add({ targets: container, scale: baseScale * 0.96, duration: 60, yoyo: true });
-    audio.click();
-    audio.resume();
+    // Trigger the action FIRST so the user-facing response feels instant.
+    // The press-down tween + audio click are deferred to a microtask so
+    // they never block the click handler — important on slower devices
+    // where AudioContext / tween work can otherwise add perceived lag.
     opts.onClick();
+    queueMicrotask(() => {
+      audio.resume();
+      audio.click();
+      scene.tweens.add({ targets: container, scale: baseScale * 0.96, duration: 60, yoyo: true });
+    });
   });
 
   return container;
@@ -181,23 +191,28 @@ export function makeHomeButton(
 
   container.add([bg, icon]);
   container.setSize(size, size);
+  // Generous hit area: 12px padding on each side beyond the visible
+  // 48px circle, so a slightly imprecise tap still registers.
+  const hitSize = size + HIT_PADDING * 2;
   container.setInteractive(
-    new Phaser.Geom.Rectangle(-size / 2, -size / 2, size, size),
+    new Phaser.Geom.Rectangle(-hitSize / 2, -hitSize / 2, hitSize, hitSize),
     Phaser.Geom.Rectangle.Contains,
   );
   container.input!.cursor = 'pointer';
 
   container.on('pointerover', () => {
-    scene.tweens.add({ targets: container, scale: 1.08, duration: 120, ease: 'Sine.easeOut' });
+    scene.tweens.add({ targets: container, scale: 1.08, duration: 80, ease: 'Sine.easeOut' });
   });
   container.on('pointerout', () => {
-    scene.tweens.add({ targets: container, scale: 1, duration: 120 });
+    scene.tweens.add({ targets: container, scale: 1, duration: 80 });
   });
   container.on('pointerdown', () => {
-    scene.tweens.add({ targets: container, scale: 0.92, duration: 60, yoyo: true });
-    audio.click();
-    audio.resume();
     onClick();
+    queueMicrotask(() => {
+      audio.resume();
+      audio.click();
+      scene.tweens.add({ targets: container, scale: 0.92, duration: 60, yoyo: true });
+    });
   });
 
   return container;
@@ -248,8 +263,9 @@ export function makeFullscreenButton(
 
   container.add([bg, icon]);
   container.setSize(size, size);
+  const hitSize = size + HIT_PADDING * 2;
   container.setInteractive(
-    new Phaser.Geom.Rectangle(-size / 2, -size / 2, size, size),
+    new Phaser.Geom.Rectangle(-hitSize / 2, -hitSize / 2, hitSize, hitSize),
     Phaser.Geom.Rectangle.Contains,
   );
   container.input!.cursor = 'pointer';
@@ -265,25 +281,26 @@ export function makeFullscreenButton(
   });
 
   container.on('pointerover', () => {
-    scene.tweens.add({ targets: container, scale: 1.08, duration: 120, ease: 'Sine.easeOut' });
+    scene.tweens.add({ targets: container, scale: 1.08, duration: 80, ease: 'Sine.easeOut' });
   });
   container.on('pointerout', () => {
-    scene.tweens.add({ targets: container, scale: 1, duration: 120 });
+    scene.tweens.add({ targets: container, scale: 1, duration: 80 });
   });
   container.on('pointerdown', () => {
-    scene.tweens.add({ targets: container, scale: 0.92, duration: 60, yoyo: true });
-    audio.click();
+    // Run the FS toggle SYNCHRONOUSLY (Fullscreen API requires being
+    // called from inside the user gesture's call stack).
     audio.resume();
     if (isFs()) {
       scene.scale.stopFullscreen();
-      return;
-    }
-    if (fullscreenSupported()) {
+    } else if (fullscreenSupported()) {
       void tryFullscreen();
     } else if (isIOS()) {
-      // iOS Safari < 16.4: no FS API. Surface the PWA install hint instead.
       showIOSInstallHint(scene);
     }
+    queueMicrotask(() => {
+      audio.click();
+      scene.tweens.add({ targets: container, scale: 0.92, duration: 60, yoyo: true });
+    });
   });
 
   return container;

@@ -19,9 +19,17 @@ class AudioEngine {
   private sfxGain: GainNode | null = null;
   private musicNodes: { stop: () => void } | null = null;
   private currentMood: string | null = null;
+  private pendingMood: string | null = null;
   private comboPitch = 0;
   private comboResetTimer: ReturnType<typeof setTimeout> | null = null;
+  private unlocked = false;
 
+  /**
+   * Create the AudioContext. On iOS Safari this MUST be called from inside
+   * a user-gesture handler, otherwise the context will be created in a
+   * permanently-suspended state on some iOS versions. Returns null if Web
+   * Audio isn't supported at all (extremely rare).
+   */
   ensureContext(): AudioContext | null {
     if (this.ctx) return this.ctx;
     try {
@@ -47,22 +55,46 @@ class AudioEngine {
     }
   }
 
+  /**
+   * Resume the AudioContext (required after creation on most browsers, and
+   * after returning from background on iOS). Idempotent — safe to call
+   * from every user gesture. Plays a 1-sample silent buffer the first
+   * time, the canonical iOS unlock trick.
+   */
   resume(): void {
     const ctx = this.ensureContext();
-    if (ctx && ctx.state === 'suspended') void ctx.resume();
+    if (!ctx) return;
+    if (ctx.state === 'suspended') void ctx.resume();
+    if (!this.unlocked) {
+      try {
+        const buf = ctx.createBuffer(1, 1, 22050);
+        const src = ctx.createBufferSource();
+        src.buffer = buf;
+        src.connect(ctx.destination);
+        src.start(0);
+      } catch {
+        /* best-effort */
+      }
+      this.unlocked = true;
+      // If music was requested before audio was unlocked, start it now.
+      if (this.pendingMood && !this.musicNodes) {
+        this.playMusic(this.pendingMood);
+        this.pendingMood = null;
+      }
+    }
   }
 
   applyMute(): void {
-    if (!this.master) return;
+    if (!this.master || !this.ctx) return;
     const target = state.mute ? 0 : 0.85;
-    const t = this.ctx!.currentTime;
+    const t = this.ctx.currentTime;
     this.master.gain.cancelScheduledValues(t);
     this.master.gain.linearRampToValueAtTime(target, t + 0.1);
   }
 
   private playNote(opts: NoteOpts): void {
-    const ctx = this.ensureContext();
-    if (!ctx || !this.sfxGain) return;
+    const ctx = this.ctx;
+    if (!ctx || !this.sfxGain || !this.unlocked) return;
     const {
       freq,
       duration = 0.18,
@@ -89,8 +121,8 @@ class AudioEngine {
   }
 
   private playNoise(duration: number, volume: number, filterFreq = 1200): void {
-    const ctx = this.ensureContext();
-    if (!ctx || !this.sfxGain) return;
+    const ctx = this.ctx;
+    if (!ctx || !this.sfxGain || !this.unlocked) return;
     const bufferSize = Math.floor(ctx.sampleRate * duration);
     const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
     const data = buffer.getChannelData(0);
@@ -172,11 +204,16 @@ class AudioEngine {
 
   playMusic(mood: string): void {
     if (this.currentMood === mood && this.musicNodes) return;
+    // If audio isn't unlocked yet (no user gesture since page load),
+    // queue the mood — resume() will start it as soon as the user taps.
+    if (!this.unlocked || !this.ctx || !this.musicGain) {
+      this.pendingMood = mood;
+      return;
+    }
     this.stopMusic();
-    const ctx = this.ensureContext();
-    if (!ctx || !this.musicGain) return;
     this.currentMood = mood;
-    this.musicNodes = startProceduralLoop(ctx, this.musicGain, mood);
+    this.pendingMood = null;
+    this.musicNodes = startProceduralLoop(this.ctx, this.musicGain, mood);
   }
 
   stopMusic(): void {
@@ -185,6 +222,26 @@ class AudioEngine {
       this.musicNodes = null;
     }
     this.currentMood = null;
+  }
+
+  /** Call when the page is hidden (visibility change) so music can be
+   * cleanly restarted on return — required on iOS where backgrounded
+   * AudioContexts often get into a glitchy state. */
+  suspendForBackground(): void {
+    const mood = this.currentMood;
+    this.stopMusic();
+    if (mood) this.pendingMood = mood;
+  }
+
+  /** Restart whatever music was playing before background, after the
+   * AudioContext has been resumed (i.e. inside a user gesture or
+   * immediately on visibilitychange to visible). */
+  restoreFromBackground(): void {
+    if (!this.pendingMood) return;
+    if (!this.unlocked || !this.ctx) return;
+    const mood = this.pendingMood;
+    this.pendingMood = null;
+    this.playMusic(mood);
   }
 }
 

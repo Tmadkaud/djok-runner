@@ -62,16 +62,30 @@ game.scene.start('Orientation');
 // GA4 — no-op unless VITE_GA4_ID is set AND cookie consent is true.
 setupAnalytics();
 
-// Resume audio on first user interaction (mobile autoplay policy)
-const resumeAudio = (): void => {
+// Resume / unlock audio on the FIRST user interaction (mobile autoplay
+// policy). On iOS the AudioContext must be created inside a gesture, so
+// we listen on both pointerdown AND touchstart in the capture phase to
+// guarantee we run in the same call stack as the gesture, even if Phaser
+// stops propagation.
+const unlockAudio = (): void => {
   audio.resume();
 };
-window.addEventListener('pointerdown', resumeAudio, { once: false });
-window.addEventListener('keydown', resumeAudio, { once: false });
+window.addEventListener('pointerdown', unlockAudio, { capture: true });
+window.addEventListener('touchstart', unlockAudio, { capture: true, passive: true });
+window.addEventListener('keydown', unlockAudio, { capture: true });
+window.addEventListener('click', unlockAudio, { capture: true });
 
-// Tab visibility: pause music
+// Tab visibility: stop music cleanly when hidden, resume on return.
+// iOS in particular suspends the AudioContext when the PWA goes into the
+// app switcher or the screen locks; restoring the music here handles
+// that case so the user always hears the right track.
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) audio.stopMusic();
+  if (document.hidden) {
+    audio.suspendForBackground();
+  } else {
+    audio.resume();
+    audio.restoreFromBackground();
+  }
 });
 
 export { game };
