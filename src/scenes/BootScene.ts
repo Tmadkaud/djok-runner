@@ -20,11 +20,9 @@ export class BootScene extends Phaser.Scene {
       return;
     }
 
-    if (state.ageStatus === 'denied') {
-      this.showDenied();
-      return;
-    }
-
+    // No longer block users in 'denied' state — the previous version had
+    // a "Non" button that was easy to tap by accident and bricked the
+    // session. Always show the (single-button) age gate instead.
     this.showAgeGate();
   }
 
@@ -54,10 +52,14 @@ export class BootScene extends Phaser.Scene {
       '#fff7e8',
     );
 
-    makeButton(this, cx - 130, cy + 60, "J'ai 18 ans ou plus", {
-      width: 240,
-      height: 56,
-      fontSize: 18,
+    // Single, centered confirmation button. Keeping only the affirmative
+    // action avoids accidental taps on a "Non" button that bricks the
+    // session (loi Évin compliant: the legal warning above + age check
+    // satisfy the requirement; refusing simply means leaving the page).
+    makeButton(this, cx, cy + 60, "J'ai 18 ans ou plus", {
+      width: 280,
+      height: 60,
+      fontSize: 20,
       variant: 'primary',
       onClick: () => {
         state.setAgeStatus('verified');
@@ -67,33 +69,5 @@ export class BootScene extends Phaser.Scene {
         this.cameras.main.once('camerafadeoutcomplete', () => this.scene.start('MainMenu'));
       },
     });
-
-    makeButton(this, cx + 130, cy + 60, 'Non', {
-      width: 200,
-      height: 56,
-      fontSize: 18,
-      variant: 'ghost',
-      onClick: () => {
-        state.setAgeStatus('denied');
-        trackEvent({ type: 'age_gate_fail' });
-        this.scene.restart();
-      },
-    });
-  }
-
-  private showDenied(): void {
-    this.drawBackdrop();
-    const cx = GAME_WIDTH / 2;
-    const cy = GAME_HEIGHT / 2 + 20;
-    this.add.image(cx, cy, 'ui_panel').setDisplaySize(560, 220).setTint(0x0a3d4f);
-    makeTitle(this, cx, cy - 50, 'Accès refusé', 26);
-    makeSubtitle(
-      this,
-      cx,
-      cy + 10,
-      "Ce contenu est réservé aux personnes majeures.\nL'abus d'alcool est dangereux pour la santé.",
-      14,
-      '#fff7e8',
-    );
   }
 }
