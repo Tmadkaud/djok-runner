@@ -1,0 +1,12 @@
+# Cloudflare Pages cache rules — Djok Runner
+
+# Hashed Vite assets — safe to cache forever.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# HTML entrypoint — never cache, so a new deploy is picked up instantly.
+/index.html
+  Cache-Control: public, max-age=0, must-revalidate
+
+/
+  Cache-Control: public, max-age=0, must-revalidate

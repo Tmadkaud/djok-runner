@@ -1,0 +1,20 @@
+{
+  "name": "djok-runner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Djok Runner - jeu marketing pour la marque de rhum Opportune 1791",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host",
+    "lint": "eslint . --ext .ts"
+  },
+  "dependencies": {
+    "phaser": "^3.80.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4",
+    "vite": "^5.4.2"
+  }
+}

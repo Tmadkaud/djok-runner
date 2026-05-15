@@ -1,0 +1,46 @@
+################################################################################
+# Netlify configuration — Djok Runner (Opportune 1791)
+# Static SPA built with Vite. The `dist/` folder is published as-is.
+################################################################################
+
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "20"
+  NPM_FLAGS = "--no-audit --no-fund"
+
+# SPA fallback — every unknown route returns index.html (200, not a 301)
+# so future client-side routing works without 404s on deep links.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# Long-lived cache for hashed Vite assets (filenames contain a content hash).
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# index.html must always be revalidated so a new deploy is picked up instantly.
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+
+# Same for the root URL (Netlify serves index.html for `/`).
+[[headers]]
+  for = "/"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+
+# Deploy previews are enabled by default — this section makes the intent
+# explicit and is a placeholder for any preview-specific overrides
+# (e.g. a different VITE_GA4_ID or a `noindex` header for previews).
+[context.deploy-preview]
+  command = "npm run build"
+
+[context.deploy-preview.environment]
+  NODE_VERSION = "20"
