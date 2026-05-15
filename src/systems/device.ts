@@ -78,7 +78,45 @@ export async function tryFullscreen(): Promise<void> {
     } else if (typeof el.webkitRequestFullscreen === 'function') {
       await el.webkitRequestFullscreen();
     }
+    const orient = (screen as Screen & { orientation?: { lock?: (o: string) => Promise<void> } }).orientation;
+    if (orient && typeof orient.lock === 'function') {
+      orient.lock('landscape').catch(() => { /* best-effort */ });
+    }
   } catch {
     /* best-effort, ignore */
   }
+}
+
+/** True if the page is currently being displayed in PWA standalone mode
+ * (e.g. installed via "Add to Home Screen" on iOS, or via the Chrome
+ * install prompt on Android/desktop). */
+export function isStandalone(): boolean {
+  if (typeof window === 'undefined') return false;
+  const navStandalone = (navigator as Navigator & { standalone?: boolean }).standalone === true;
+  const mqStandalone = typeof window.matchMedia === 'function'
+    && window.matchMedia('(display-mode: standalone)').matches;
+  return navStandalone || mqStandalone;
+}
+
+/** True if running in mobile Safari on iOS / iPadOS (where the standard
+ * Fullscreen API was unsupported until iOS 16.4 and where "Add to Home
+ * Screen" is the most reliable path to a chrome-less full-screen game). */
+export function isIOS(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  const iOS = /iPad|iPhone|iPod/.test(ua) && !(window as Window & { MSStream?: unknown }).MSStream;
+  // iPadOS 13+ identifies as Mac with touch — detect via maxTouchPoints
+  const iPadOS = navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1;
+  return iOS || iPadOS;
+}
+
+/** True if the standard Fullscreen API is usable (best-effort feature test). */
+export function fullscreenSupported(): boolean {
+  if (typeof document === 'undefined') return false;
+  const el = document.documentElement as HTMLElement & {
+    requestFullscreen?: () => Promise<void>;
+    webkitRequestFullscreen?: () => Promise<void>;
+  };
+  return typeof el.requestFullscreen === 'function'
+    || typeof el.webkitRequestFullscreen === 'function';
 }

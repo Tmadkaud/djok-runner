@@ -1,9 +1,10 @@
 import Phaser from 'phaser';
 import { GAME_WIDTH, GAME_HEIGHT, COLORS, BRAND } from '../config';
-import { makeTitle, makeSubtitle, makeButton } from '../ui/widgets';
+import { makeTitle, makeSubtitle, makeButton, makeFullscreenButton, showIOSInstallHint } from '../ui/widgets';
 import { state } from '../systems/state';
 import { audio } from '../systems/audio';
 import { setupAnalytics } from '../systems/analytics';
+import { isIOS, isStandalone, fullscreenSupported } from '../systems/device';
 
 export class MainMenuScene extends Phaser.Scene {
   constructor() { super('MainMenu'); }
@@ -95,6 +96,16 @@ export class MainMenuScene extends Phaser.Scene {
 
     // Mute toggle (top right)
     this.makeMuteToggle();
+
+    // Fullscreen toggle (top left) — hidden when already in PWA standalone mode
+    makeFullscreenButton(this);
+
+    // iOS install hint — for iPhone users who can't get true fullscreen
+    // without "Add to Home Screen". Shown once per session, after a small
+    // delay so it doesn't slam in as the menu fades in.
+    if (isIOS() && !isStandalone() && !fullscreenSupported()) {
+      this.time.delayedCall(900, () => showIOSInstallHint(this));
+    }
 
     // Credits link bottom
     const credits = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT - 8, '© Opportune 1791  •  À consommer avec modération', {

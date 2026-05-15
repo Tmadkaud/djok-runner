@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import { COLORS } from '../config';
 import { audio } from '../systems/audio';
-import { isTouchDevice } from '../systems/device';
+import { isTouchDevice, tryFullscreen, fullscreenSupported, isIOS, isStandalone } from '../systems/device';
 
 export interface ButtonOpts {
   width?: number;
@@ -201,4 +201,150 @@ export function makeHomeButton(
   });
 
   return container;
+}
+
+/**
+ * Floating fullscreen toggle button. Sits at top-LEFT (the home button is
+ * top-right) so the two never overlap. Tapping triggers the standard
+ * Fullscreen API via tryFullscreen() — works on Android Chrome, iOS Safari
+ * ≥ 16.4, and desktop. On unsupported browsers the button silently does
+ * nothing visible — users can install the PWA via "Add to Home Screen"
+ * for a true standalone experience (see `showIOSInstallHint`).
+ *
+ * Returns null when already running in PWA standalone mode (no point
+ * showing the button — there is no browser chrome to escape).
+ */
+export function makeFullscreenButton(
+  scene: Phaser.Scene,
+  x: number = 36,
+  y: number = 36,
+): Phaser.GameObjects.Container | null {
+  if (isStandalone()) return null;
+  if (!fullscreenSupported() && !isIOS()) return null;
+
+  const size = 48;
+
+  const container = scene.add.container(x, y);
+  container.setDepth(2000);
+  container.setScrollFactor(0);
+
+  const bg = scene.add.graphics();
+  const drawBg = (): void => {
+    bg.clear();
+    bg.fillStyle(0x0a3d4f, 0.78);
+    bg.fillCircle(0, 0, size / 2);
+    bg.lineStyle(2, COLORS.gold, 0.85);
+    bg.strokeCircle(0, 0, size / 2);
+  };
+  drawBg();
+
+  const isFs = (): boolean => scene.scale.isFullscreen;
+  const icon = scene.add.text(0, 1, isFs() ? '✕' : '⛶', {
+    fontFamily: 'Trebuchet MS, system-ui, sans-serif',
+    fontSize: '24px',
+    color: '#fff7e8',
+    fontStyle: 'bold',
+  }).setOrigin(0.5);
+
+  container.add([bg, icon]);
+  container.setSize(size, size);
+  container.setInteractive(
+    new Phaser.Geom.Rectangle(-size / 2, -size / 2, size, size),
+    Phaser.Geom.Rectangle.Contains,
+  );
+  container.input!.cursor = 'pointer';
+
+  const refreshIcon = (): void => {
+    icon.setText(isFs() ? '✕' : '⛶');
+  };
+  scene.scale.on('enterfullscreen', refreshIcon);
+  scene.scale.on('leavefullscreen', refreshIcon);
+  container.once(Phaser.GameObjects.Events.DESTROY, () => {
+    scene.scale.off('enterfullscreen', refreshIcon);
+    scene.scale.off('leavefullscreen', refreshIcon);
+  });
+
+  container.on('pointerover', () => {
+    scene.tweens.add({ targets: container, scale: 1.08, duration: 120, ease: 'Sine.easeOut' });
+  });
+  container.on('pointerout', () => {
+    scene.tweens.add({ targets: container, scale: 1, duration: 120 });
+  });
+  container.on('pointerdown', () => {
+    scene.tweens.add({ targets: container, scale: 0.92, duration: 60, yoyo: true });
+    audio.click();
+    audio.resume();
+    if (isFs()) {
+      scene.scale.stopFullscreen();
+      return;
+    }
+    if (fullscreenSupported()) {
+      void tryFullscreen();
+    } else if (isIOS()) {
+      // iOS Safari < 16.4: no FS API. Surface the PWA install hint instead.
+      showIOSInstallHint(scene);
+    }
+  });
+
+  return container;
+}
+
+/**
+ * One-shot dismissable banner for iOS Safari users explaining how to add
+ * the page to the home screen for a true full-screen native-app feel.
+ * Only shown once per session (uses a class-level flag).
+ */
+let iosHintShown = false;
+export function showIOSInstallHint(scene: Phaser.Scene, force = false): void {
+  if (iosHintShown && !force) return;
+  if (isStandalone()) return;
+  iosHintShown = true;
+
+  const w = scene.scale.width;
+  const h = scene.scale.height;
+  const cx = w / 2;
+  const cy = h / 2;
+
+  const overlay = scene.add.container(0, 0);
+  overlay.setDepth(3000);
+  overlay.setScrollFactor(0);
+
+  const dim = scene.add.graphics();
+  dim.fillStyle(0x000000, 0.7);
+  dim.fillRect(0, 0, w, h);
+  dim.setInteractive(new Phaser.Geom.Rectangle(0, 0, w, h), Phaser.Geom.Rectangle.Contains);
+
+  const cardW = Math.min(560, w - 60);
+  const cardH = 220;
+  const card = scene.add.graphics();
+  card.fillStyle(0x0a3d4f, 0.97);
+  card.fillRoundedRect(cx - cardW / 2, cy - cardH / 2, cardW, cardH, 14);
+  card.lineStyle(2, COLORS.gold, 1);
+  card.strokeRoundedRect(cx - cardW / 2, cy - cardH / 2, cardW, cardH, 14);
+
+  const title = scene.add.text(cx, cy - cardH / 2 + 22, '📱  Mode plein écran', {
+    fontFamily: 'Trebuchet MS, system-ui, sans-serif',
+    fontSize: '20px',
+    color: '#ffd166',
+    fontStyle: 'bold',
+  }).setOrigin(0.5, 0);
+
+  const body = scene.add.text(cx, cy - 24,
+    'Pour jouer en plein écran sans la barre Safari :\n\n1. Touche  ⬆︎  Partager (en bas)\n2. Choisis  «  Sur l\'écran d\'accueil  »\n3. Lance Djok depuis l\'icône — vrai mode app !',
+    {
+      fontFamily: 'Trebuchet MS, system-ui, sans-serif',
+      fontSize: '14px',
+      color: '#fff7e8',
+      align: 'center',
+      lineSpacing: 4,
+    }).setOrigin(0.5, 0);
+
+  const closeBtn = makeButton(scene, cx, cy + cardH / 2 - 36, 'OK, compris', {
+    width: 180, height: 44, fontSize: 16, variant: 'primary',
+    onClick: () => {
+      overlay.destroy();
+    },
+  });
+
+  overlay.add([dim, card, title, body, closeBtn]);
 }
