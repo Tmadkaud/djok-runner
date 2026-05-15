@@ -17,12 +17,11 @@ class AudioEngine {
   private master: GainNode | null = null;
   private musicGain: GainNode | null = null;
   private sfxGain: GainNode | null = null;
-  private musicNodes: { stop: () => void } | null = null;
-  private currentMood: string | null = null;
-  private pendingMood: string | null = null;
+  private musicEl: HTMLAudioElement | null = null;
   private comboPitch = 0;
   private comboResetTimer: ReturnType<typeof setTimeout> | null = null;
   private unlocked = false;
+  private musicPending = false;
 
   /**
    * Create the AudioContext. On iOS Safari this MUST be called from inside
@@ -76,20 +75,27 @@ class AudioEngine {
         /* best-effort */
       }
       this.unlocked = true;
-      // If music was requested before audio was unlocked, start it now.
-      if (this.pendingMood && !this.musicNodes) {
-        this.playMusic(this.pendingMood);
-        this.pendingMood = null;
-      }
+    }
+    // If music was requested before audio was unlocked, start it now
+    // (always safe to call — playMusic is idempotent if already playing).
+    if (this.musicPending) {
+      this.musicPending = false;
+      this.playMusic();
     }
   }
 
   applyMute(): void {
-    if (!this.master || !this.ctx) return;
-    const target = state.mute ? 0 : 0.85;
-    const t = this.ctx.currentTime;
-    this.master.gain.cancelScheduledValues(t);
-    this.master.gain.linearRampToValueAtTime(target, t + 0.1);
+    if (this.master && this.ctx) {
+      const target = state.mute ? 0 : 0.85;
+      const t = this.ctx.currentTime;
+      this.master.gain.cancelScheduledValues(t);
+      this.master.gain.linearRampToValueAtTime(target, t + 0.1);
+    }
+    // Music plays through an HTMLAudioElement (not Web Audio), so mute
+    // it independently of the WebAudio master gain.
+    if (this.musicEl) {
+      this.musicEl.muted = state.mute;
+    }
   }
 
   private playNote(opts: NoteOpts): void {
@@ -200,339 +206,63 @@ class AudioEngine {
     this.playNote({ freq: 880, duration: 0.03, type: 'square', volume: 0.18, release: 0.04 });
   }
 
-  // ─── Music (procedural per island) ────────────────────────────────────
+  // ─── Music (single ambient track: pi-bèl-bouteille) ───────────────────
 
-  playMusic(mood: string): void {
-    if (this.currentMood === mood && this.musicNodes) return;
-    // If audio isn't unlocked yet (no user gesture since page load),
-    // queue the mood — resume() will start it as soon as the user taps.
-    if (!this.unlocked || !this.ctx || !this.musicGain) {
-      this.pendingMood = mood;
+  private ensureMusicEl(): HTMLAudioElement {
+    if (this.musicEl) return this.musicEl;
+    const el = new Audio('./music/pi-bel-bouteille.mp3');
+    el.loop = true;
+    el.preload = 'auto';
+    el.volume = 0.55;
+    el.muted = state.mute;
+    el.crossOrigin = 'anonymous';
+    this.musicEl = el;
+    return el;
+  }
+
+  /**
+   * Plays the ambient track. The `mood` argument is kept for API
+   * compatibility with the caller scenes but is ignored — there is now a
+   * single hand-picked track for the whole game (Tmadkaud's own
+   * "Pi-bèl-bouteille"). If the user hasn't tapped yet (so audio is
+   * locked), queue the play and start it from the next gesture.
+   */
+  playMusic(_mood?: string): void {
+    void _mood;
+    const el = this.ensureMusicEl();
+    el.muted = state.mute;
+    if (!this.unlocked) {
+      this.musicPending = true;
       return;
     }
-    this.stopMusic();
-    this.currentMood = mood;
-    this.pendingMood = null;
-    this.musicNodes = startProceduralLoop(this.ctx, this.musicGain, mood);
+    if (!el.paused) return;
+    el.play().catch(() => {
+      // Autoplay blocked — flag for retry on the next gesture.
+      this.musicPending = true;
+    });
   }
 
   stopMusic(): void {
-    if (this.musicNodes) {
-      this.musicNodes.stop();
-      this.musicNodes = null;
+    this.musicPending = false;
+    if (this.musicEl) {
+      this.musicEl.pause();
     }
-    this.currentMood = null;
   }
 
-  /** Call when the page is hidden (visibility change) so music can be
-   * cleanly restarted on return — required on iOS where backgrounded
-   * AudioContexts often get into a glitchy state. */
+  /** Pause music when the page goes to background; iOS suspends the tab
+   * and we want a clean restart on return. */
   suspendForBackground(): void {
-    const mood = this.currentMood;
+    const wasPlaying = this.musicEl ? !this.musicEl.paused : false;
     this.stopMusic();
-    if (mood) this.pendingMood = mood;
+    if (wasPlaying) this.musicPending = true;
   }
 
-  /** Restart whatever music was playing before background, after the
-   * AudioContext has been resumed (i.e. inside a user gesture or
-   * immediately on visibilitychange to visible). */
+  /** Resume music after background, when the page becomes visible. */
   restoreFromBackground(): void {
-    if (!this.pendingMood) return;
-    if (!this.unlocked || !this.ctx) return;
-    const mood = this.pendingMood;
-    this.pendingMood = null;
-    this.playMusic(mood);
+    if (!this.musicPending) return;
+    this.musicPending = false;
+    this.playMusic();
   }
-}
-
-interface PatternNote {
-  step: number; // 16th notes
-  freq: number;
-  dur: number;
-  type?: OscType;
-  vol?: number;
-}
-
-interface MoodPattern {
-  bpm: number;
-  bass: PatternNote[];
-  lead: PatternNote[];
-  perc: number[]; // steps where shaker hits
-  kick: number[];
-}
-
-const C4 = 261.63;
-const E4 = 329.63;
-const G4 = 392.0;
-const A4 = 440.0;
-const C5 = 523.25;
-const D5 = 587.33;
-const E5 = 659.26;
-const G5 = 783.99;
-const A3 = 220.0;
-const C3 = 130.81;
-const E3 = 164.81;
-const G3 = 196.0;
-
-const PATTERNS: Record<string, MoodPattern> = {
-  biguine: {
-    bpm: 120,
-    bass: [
-      { step: 0, freq: C3, dur: 0.4 },
-      { step: 4, freq: G3, dur: 0.4 },
-      { step: 8, freq: A3, dur: 0.4 },
-      { step: 12, freq: E3, dur: 0.4 },
-    ],
-    lead: [
-      { step: 0, freq: E5, dur: 0.18 },
-      { step: 2, freq: G5, dur: 0.18 },
-      { step: 4, freq: D5, dur: 0.18 },
-      { step: 6, freq: E5, dur: 0.18 },
-      { step: 8, freq: C5, dur: 0.18 },
-      { step: 10, freq: E5, dur: 0.18 },
-      { step: 12, freq: A4, dur: 0.18 },
-      { step: 14, freq: C5, dur: 0.18 },
-    ],
-    perc: [2, 6, 10, 14],
-    kick: [0, 8],
-  },
-  calypso: {
-    bpm: 128,
-    bass: [
-      { step: 0, freq: G3, dur: 0.4 },
-      { step: 4, freq: C3, dur: 0.4 },
-      { step: 8, freq: G3, dur: 0.4 },
-      { step: 12, freq: A3, dur: 0.4 },
-    ],
-    lead: [
-      { step: 0, freq: G4, dur: 0.18 },
-      { step: 3, freq: C5, dur: 0.18 },
-      { step: 6, freq: E5, dur: 0.18 },
-      { step: 8, freq: G5, dur: 0.18 },
-      { step: 11, freq: E5, dur: 0.18 },
-      { step: 14, freq: D5, dur: 0.18 },
-    ],
-    perc: [1, 3, 5, 7, 9, 11, 13, 15],
-    kick: [0, 4, 8, 12],
-  },
-  salsa: {
-    bpm: 132,
-    bass: [
-      { step: 0, freq: C3, dur: 0.3 },
-      { step: 3, freq: C3, dur: 0.3 },
-      { step: 6, freq: G3, dur: 0.3 },
-      { step: 8, freq: A3, dur: 0.3 },
-      { step: 11, freq: E3, dur: 0.3 },
-      { step: 14, freq: G3, dur: 0.3 },
-    ],
-    lead: [
-      { step: 0, freq: C5, dur: 0.18 },
-      { step: 2, freq: E5, dur: 0.18 },
-      { step: 4, freq: G5, dur: 0.18 },
-      { step: 6, freq: E5, dur: 0.18 },
-      { step: 8, freq: A4, dur: 0.18 },
-      { step: 10, freq: C5, dur: 0.18 },
-      { step: 12, freq: E5, dur: 0.18 },
-      { step: 14, freq: D5, dur: 0.18 },
-    ],
-    perc: [0, 2, 3, 6, 8, 10, 11, 14],
-    kick: [0, 6, 8, 14],
-  },
-  samba: {
-    bpm: 140,
-    bass: [
-      { step: 0, freq: C3, dur: 0.3 },
-      { step: 4, freq: E3, dur: 0.3 },
-      { step: 8, freq: G3, dur: 0.3 },
-      { step: 12, freq: E3, dur: 0.3 },
-    ],
-    lead: [
-      { step: 0, freq: E5, dur: 0.15 },
-      { step: 2, freq: G5, dur: 0.15 },
-      { step: 4, freq: A4, dur: 0.15 },
-      { step: 5, freq: C5, dur: 0.15 },
-      { step: 8, freq: D5, dur: 0.15 },
-      { step: 10, freq: E5, dur: 0.15 },
-      { step: 12, freq: G5, dur: 0.15 },
-      { step: 14, freq: E5, dur: 0.15 },
-    ],
-    perc: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
-    kick: [0, 4, 8, 12],
-  },
-  marimba: {
-    bpm: 110,
-    bass: [
-      { step: 0, freq: A3, dur: 0.4 },
-      { step: 4, freq: E3, dur: 0.4 },
-      { step: 8, freq: C3, dur: 0.4 },
-      { step: 12, freq: G3, dur: 0.4 },
-    ],
-    lead: [
-      { step: 0, freq: A4, dur: 0.2, type: 'sine' },
-      { step: 2, freq: C5, dur: 0.2, type: 'sine' },
-      { step: 4, freq: E5, dur: 0.2, type: 'sine' },
-      { step: 6, freq: D5, dur: 0.2, type: 'sine' },
-      { step: 8, freq: C5, dur: 0.2, type: 'sine' },
-      { step: 10, freq: A4, dur: 0.2, type: 'sine' },
-      { step: 12, freq: G4, dur: 0.2, type: 'sine' },
-      { step: 14, freq: E4, dur: 0.2, type: 'sine' },
-    ],
-    perc: [4, 12],
-    kick: [0, 8],
-  },
-  cumbia: {
-    bpm: 96,
-    bass: [
-      { step: 0, freq: A3, dur: 0.5 },
-      { step: 6, freq: A3, dur: 0.5 },
-      { step: 8, freq: E3, dur: 0.5 },
-      { step: 14, freq: G3, dur: 0.4 },
-    ],
-    lead: [
-      { step: 0, freq: A4, dur: 0.18 },
-      { step: 4, freq: C5, dur: 0.18 },
-      { step: 6, freq: E5, dur: 0.18 },
-      { step: 8, freq: D5, dur: 0.18 },
-      { step: 12, freq: C5, dur: 0.18 },
-      { step: 14, freq: A4, dur: 0.18 },
-    ],
-    perc: [2, 6, 10, 14],
-    kick: [0, 4, 8, 12],
-  },
-  menu: {
-    bpm: 100,
-    bass: [
-      { step: 0, freq: C3, dur: 0.5 },
-      { step: 8, freq: G3, dur: 0.5 },
-    ],
-    lead: [
-      { step: 0, freq: G4, dur: 0.3, type: 'sine' },
-      { step: 4, freq: C5, dur: 0.3, type: 'sine' },
-      { step: 8, freq: E5, dur: 0.3, type: 'sine' },
-      { step: 12, freq: D5, dur: 0.3, type: 'sine' },
-    ],
-    perc: [4, 12],
-    kick: [0, 8],
-  },
-};
-
-function startProceduralLoop(ctx: AudioContext, out: GainNode, mood: string): { stop: () => void } {
-  const pattern = PATTERNS[mood] ?? PATTERNS.menu;
-  const stepDur = 60 / pattern.bpm / 4;
-  const loopDur = stepDur * 16;
-
-  let stopped = false;
-  let nextLoopTime = ctx.currentTime + 0.05;
-  const sources: AudioScheduledSourceNode[] = [];
-
-  const schedulerInterval = window.setInterval(() => {
-    if (stopped) return;
-    while (nextLoopTime < ctx.currentTime + 0.5) {
-      scheduleLoop(ctx, out, pattern, nextLoopTime, stepDur, sources);
-      nextLoopTime += loopDur;
-    }
-  }, 100);
-
-  return {
-    stop() {
-      stopped = true;
-      clearInterval(schedulerInterval);
-      sources.forEach((s) => {
-        try { s.stop(); } catch { /* may already be stopped */ }
-      });
-    },
-  };
-}
-
-function scheduleLoop(
-  ctx: AudioContext,
-  out: GainNode,
-  pattern: MoodPattern,
-  startAt: number,
-  stepDur: number,
-  sinks: AudioScheduledSourceNode[],
-): void {
-  for (const note of pattern.bass) {
-    scheduleNote(ctx, out, note.freq, startAt + note.step * stepDur, note.dur, note.type ?? 'triangle', note.vol ?? 0.18, sinks);
-  }
-  for (const note of pattern.lead) {
-    scheduleNote(ctx, out, note.freq, startAt + note.step * stepDur, note.dur, note.type ?? 'triangle', note.vol ?? 0.12, sinks);
-  }
-  for (const step of pattern.perc) {
-    scheduleNoise(ctx, out, startAt + step * stepDur, 0.04, 0.08, 4000, sinks);
-  }
-  for (const step of pattern.kick) {
-    scheduleKick(ctx, out, startAt + step * stepDur, sinks);
-  }
-}
-
-function scheduleNote(
-  ctx: AudioContext,
-  out: GainNode,
-  freq: number,
-  at: number,
-  dur: number,
-  type: OscType,
-  vol: number,
-  sinks: AudioScheduledSourceNode[],
-): void {
-  const osc = ctx.createOscillator();
-  const g = ctx.createGain();
-  osc.type = type;
-  osc.frequency.value = freq;
-  g.gain.setValueAtTime(0, at);
-  g.gain.linearRampToValueAtTime(vol, at + 0.01);
-  g.gain.setValueAtTime(vol, at + dur * 0.6);
-  g.gain.linearRampToValueAtTime(0, at + dur);
-  osc.connect(g);
-  g.connect(out);
-  osc.start(at);
-  osc.stop(at + dur + 0.02);
-  sinks.push(osc);
-}
-
-function scheduleNoise(
-  ctx: AudioContext,
-  out: GainNode,
-  at: number,
-  dur: number,
-  vol: number,
-  filterFreq: number,
-  sinks: AudioScheduledSourceNode[],
-): void {
-  const bufferSize = Math.max(1, Math.floor(ctx.sampleRate * dur));
-  const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-  const data = buffer.getChannelData(0);
-  for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
-  const src = ctx.createBufferSource();
-  src.buffer = buffer;
-  const filter = ctx.createBiquadFilter();
-  filter.type = 'highpass';
-  filter.frequency.value = filterFreq;
-  const g = ctx.createGain();
-  g.gain.setValueAtTime(vol, at);
-  g.gain.exponentialRampToValueAtTime(0.001, at + dur);
-  src.connect(filter);
-  filter.connect(g);
-  g.connect(out);
-  src.start(at);
-  src.stop(at + dur + 0.02);
-  sinks.push(src);
-}
-
-function scheduleKick(ctx: AudioContext, out: GainNode, at: number, sinks: AudioScheduledSourceNode[]): void {
-  const osc = ctx.createOscillator();
-  const g = ctx.createGain();
-  osc.type = 'sine';
-  osc.frequency.setValueAtTime(120, at);
-  osc.frequency.exponentialRampToValueAtTime(40, at + 0.15);
-  g.gain.setValueAtTime(0.3, at);
-  g.gain.exponentialRampToValueAtTime(0.001, at + 0.2);
-  osc.connect(g);
-  g.connect(out);
-  osc.start(at);
-  osc.stop(at + 0.22);
-  sinks.push(osc);
 }
 
 export const audio = new AudioEngine();
